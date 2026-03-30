@@ -1,0 +1,22 @@
+====================================================================================================
+  POLYMARKET BTC 5-MIN BOT — SUMMARY
+  Generated     : 2026-03-30 06:18:23 UTC
+  Strategy      : see config.py STRATEGIES
+====================================================================================================
+  Starting Bankroll : $1000.00
+  Current Bankroll  : $999.00
+  Total P&L         : -1.0000$
+  Trades placed     : 1
+  Resolved          : 0
+  Pending           : 1
+  Wins              : 0
+  Losses            : 0
+  Win Rate          : 0.0%
+  Avg Win Net       : +$0.0000
+  Avg Loss Net      : $0.0000
+  Total Net (resolved): +0.0000$
+
+  #    Slug                                   Side   Price    Outcome      Result   Net          Link
+  --------------------------------------------------------------------------------------------------------------
+  1    btc-updown-5m-1774851300               UP     $0.2900  PENDING      OPEN     -$1.00 (open) https://polymarket.com/event/btc-updown-5m-1774851300
+====================================================================================================
