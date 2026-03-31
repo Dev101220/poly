@@ -61,7 +61,7 @@ STRATEGIES = {
         "buy_window_start"   : 60,     # 1 minute elapsed
         "buy_window_end"     : 240,    # 4 minutes remaining = 60 s elapsed in 5-min window
         # --- sell: exit when position gains 10-20% ---
-        "take_profit_pct"    : 0.20,   # take profit at +10% of entry price
+        "take_profit_pct"    : 0.12,   # take profit at +10% of entry price
         "sell_after_sec"     : None,   # no forced time-exit (hold to resolution if TP not hit)
     },
 
