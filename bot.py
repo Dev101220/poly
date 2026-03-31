@@ -4,14 +4,16 @@ Polymarket BTC 5-Min Paper Trading Bot  —  Multi-Strategy Edition
 Usage:
     python bot.py --strat 1       # Penny Hunter  (any time, <= $0.05)
     python bot.py --strat 2       # Early Bird    (first 2 min only, < $0.10)
-    python bot.py --strat 3       # Late Entry    (min 1-4, take profit 10%)
+    python bot.py --strat 3       # Late Entry    (min 1-4, TP + timed SL check)
 
 Strategy descriptions:
   1 - Buy $1 on any side <= $0.05, anytime, hold to resolution.
   2 - Buy $1 on any side < $0.10, but ONLY in the first 2 minutes.
       After the 2-minute mark, all signals are ignored for that window.
   3 - Wait 1 minute into window, buy the lower-priced side.
-      Monitor position live; if price rises 10%+ from entry -> log SELL (exit).
+      Monitor position live; take profit on gain threshold.
+      Stop-loss is checked only once when time remaining drops from 120s to 119s,
+      and only exits if unrealized loss is greater than $1.
       One trade per market window.
 """
 
@@ -77,7 +79,11 @@ state = {
     "running"        : True,
     "strategy"       : None,
     "strat_cfg"      : None,
-    # Strategy-3 position tracker  slug -> {entry_price, token_id, side, sold, sell_price}
+    # Strategy-3 position tracker
+    # slug -> {
+    #   entry_price, token_id, side, sold, sell_price,
+    #   sl_check_done
+    # }
     "open_positions" : {},
 }
 
@@ -123,6 +129,7 @@ def fire_order(side, price, token_id, market_info, note=""):
         "net"         : -TRADE_AMOUNT,
         "sold_early"  : False,
         "sell_price"  : None,
+        "sl_hit"      : False,
         "market_info" : market_info,
         "order"       : order,
     }
@@ -130,6 +137,7 @@ def fire_order(side, price, token_id, market_info, note=""):
     log_trade_event(
         slug=slug, side=side.upper(), price=price,
         market_info=market_info, order=order, note=note,
+        sl_hit=False,
     )
     logger.info(
         f"[BUY] {slug} | {side.upper()} @ ${price:.4f} | "
@@ -140,12 +148,14 @@ def fire_order(side, price, token_id, market_info, note=""):
     return record
 
 
+
 def log_skip(slug, side, price, market_info, reason):
     logger.info(f"[SKIP] {slug} | {side.upper()} @ ${price:.4f} | {reason}")
     log_trade_event(
         slug=slug, side=side.upper(), price=price,
         market_info=market_info, order=None,
         skipped=True, skip_reason=reason,
+        sl_hit=False,
     )
 
 
@@ -192,12 +202,10 @@ def strat2_check(side, best_ask, token_id, market_info):
                      f"Already bought {existing['side']} — one trade per market")
         return
 
-    # Time gate: must be within first 120 seconds
-    gate_end = cfg["buy_window_end"]  # 120
+    gate_end = cfg["buy_window_end"]
     if elapsed > gate_end:
         log_skip(slug, side, best_ask, market_info,
-                 f"Early Bird window closed "
-                 f"({elapsed:.0f}s into window, gate is 0-{gate_end}s)")
+                 f"Early Bird window closed ({elapsed:.0f}s into window, gate is 0-{gate_end}s)")
         return
 
     fire_order(side, best_ask, token_id, market_info,
@@ -205,64 +213,125 @@ def strat2_check(side, best_ask, token_id, market_info):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STRATEGY 3  —  Late Entry + Quick Exit
+#  STRATEGY 3  —  Late Entry + Quick Exit + Timed SL
 # ─────────────────────────────────────────────────────────────────────────────
 
 def strat3_check(side, best_ask, token_id, market_info):
     """
-    Entry: wait 60s, then buy cheaper side (< $0.50) between 60-240s.
-    Exit:  if position price rises >= 10% from entry -> log SELL and close.
-    """
-    cfg      = state["strat_cfg"]
-    slug     = market_info["slug"]
-    elapsed  = seconds_into_window(market_info.get("end_date", ""))
-    tp_pct   = cfg["take_profit_pct"]   # 0.10
+    Entry:
+      - wait 60s, then buy cheaper side (< $0.50) between 60-240s.
 
-    # ── Check for take-profit on EXISTING position ────────────────────────────
+    Exit:
+      - TP: if position price rises >= take_profit_pct from entry -> sell.
+      - SL: check only once when remaining time drops to 119s (i.e. after 120s remains).
+            Sell only if unrealized loss is > $1.
+    """
+    cfg        = state["strat_cfg"]
+    slug       = market_info["slug"]
+    elapsed    = seconds_into_window(market_info.get("end_date", ""))
+    remaining  = seconds_remaining(market_info.get("end_date", ""))
+    tp_pct     = cfg["take_profit_pct"]
+
     pos = state["open_positions"].get(slug)
     if pos and not pos["sold"] and pos["token_id"] == token_id:
         entry = pos["entry_price"]
         if entry > 0:
+            shares = TRADE_AMOUNT / entry
             gain = (best_ask - entry) / entry
+            unrealized_pnl = (best_ask - entry) * shares
+            unrealized_loss = max(0.0, -unrealized_pnl)
+
+            # 1) Take profit can happen anytime before expiry.
             if gain >= tp_pct:
-                # SELL
-                pos["sold"]       = True
+                pos["sold"] = True
                 pos["sell_price"] = best_ask
-                sell_pnl = (best_ask - entry) * (TRADE_AMOUNT / entry)
-                state["bankroll"] += TRADE_AMOUNT + sell_pnl
+
+                state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
 
                 trade = state["traded_markets"].get(slug)
                 if trade:
                     trade["sold_early"] = True
                     trade["sell_price"] = best_ask
-                    trade["net"]        = sell_pnl
-                    trade["won"]        = True
-                    trade["outcome"]    = f"SOLD @ ${best_ask:.4f} (+{gain*100:.1f}%)"
+                    trade["net"] = unrealized_pnl
+                    trade["won"] = True
+                    trade["outcome"] = f"TP @ ${best_ask:.4f} (+{gain*100:.1f}%)"
+                    trade["sl_hit"] = False
 
                 logger.info(
                     f"[SELL/TP] {slug} | {pos['side'].upper()} | "
                     f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
-                    f"Gain +{gain*100:.1f}% | PnL +${sell_pnl:.4f} | "
+                    f"Gain +{gain*100:.1f}% | PnL +${unrealized_pnl:.4f} | "
                     f"Bankroll ${state['bankroll']:.2f}"
                 )
                 log_trade_event(
-                    slug=slug, side=pos["side"], price=best_ask,
+                    slug=slug,
+                    side=pos["side"],
+                    price=best_ask,
                     market_info=market_info,
                     order=trade["order"] if trade else None,
-                    outcome=f"SOLD +{gain*100:.1f}%", won=True, net=sell_pnl,
+                    outcome=f"TP +{gain*100:.1f}%",
+                    won=True,
+                    net=unrealized_pnl,
                     note=f"TP exit @ {elapsed:.0f}s | entry ${entry:.4f}",
+                    sl_hit=False,
                 )
-        return  # either sold or still watching — don't open new entry
+                return
+
+            # 2) Stop-loss is checked only once when remaining time becomes 119s or less.
+            if not pos.get("sl_check_done") and remaining <= 119:
+                pos["sl_check_done"] = True
+
+                if unrealized_loss > 1.0:
+                    pos["sold"] = True
+                    pos["sell_price"] = best_ask
+
+                    state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
+
+                    trade = state["traded_markets"].get(slug)
+                    if trade:
+                        trade["sold_early"] = True
+                        trade["sell_price"] = best_ask
+                        trade["net"] = unrealized_pnl
+                        trade["won"] = False
+                        trade["outcome"] = f"SL @ ${best_ask:.4f} (-${unrealized_loss:.4f})"
+                        trade["sl_hit"] = True
+
+                    logger.info(
+                        f"[SELL/SL] {slug} | {pos['side'].upper()} | "
+                        f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
+                        f"Remaining {remaining:.0f}s | Loss -${unrealized_loss:.4f} | "
+                        f"Bankroll ${state['bankroll']:.2f}"
+                    )
+                    log_trade_event(
+                        slug=slug,
+                        side=pos["side"],
+                        price=best_ask,
+                        market_info=market_info,
+                        order=trade["order"] if trade else None,
+                        outcome=f"SL -${unrealized_loss:.4f}",
+                        won=False,
+                        net=unrealized_pnl,
+                        note=(
+                            f"SL exit @ {remaining:.0f}s remaining | "
+                            f"entry ${entry:.4f} | loss ${unrealized_loss:.4f}"
+                        ),
+                        sl_hit=True,
+                    )
+                else:
+                    logger.info(
+                        f"[SL-CHECK-SKIP] {slug} | {pos['side'].upper()} | "
+                        f"Remaining {remaining:.0f}s | Loss ${unrealized_loss:.4f} <= $1.00"
+                    )
+        return
 
     # ── Look for new ENTRY ────────────────────────────────────────────────────
     if state["traded_markets"].get(slug):
-        return  # already have a position in this market
+        return
 
-    win_start = cfg["buy_window_start"]   # 60
-    win_end   = cfg["buy_window_end"]     # 240
+    win_start = cfg["buy_window_start"]
+    win_end   = cfg["buy_window_end"]
 
     if elapsed < win_start:
-        # Still in the waiting period — silently skip (no log spam)
         return
 
     if elapsed > win_end:
@@ -270,19 +339,19 @@ def strat3_check(side, best_ask, token_id, market_info):
                  f"Late Entry window closed ({elapsed:.0f}s, gate={win_start}-{win_end}s)")
         return
 
-    # Only buy if this side is below 0.50 (cheaper than fair value)
     if best_ask >= cfg["trigger_price"]:
         return
 
     fire_order(side, best_ask, token_id, market_info,
-               note=f"Late Entry @ {elapsed:.0f}s | TP +{tp_pct*100:.0f}%")
+               note=f"Late Entry @ {elapsed:.0f}s | TP +{tp_pct*100:.0f}% | timed SL check @ 119s")
 
     state["open_positions"][slug] = {
-        "side"        : side,
-        "token_id"    : token_id,
-        "entry_price" : best_ask,
-        "sold"        : False,
-        "sell_price"  : None,
+        "side"          : side,
+        "token_id"      : token_id,
+        "entry_price"   : best_ask,
+        "sold"          : False,
+        "sell_price"    : None,
+        "sl_check_done" : False,
     }
 
 
@@ -333,7 +402,7 @@ def check_resolution_sync(slug):
             return None
         raw_prices   = m.get("outcomePrices", "[]")
         raw_outcomes = m.get("outcomes", '["Up","Down"]')
-        prices   = json.loads(raw_prices)   if isinstance(raw_prices, str) else raw_prices
+        prices   = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
         outcomes = json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
         for i, price in enumerate(prices):
             if float(price) >= 0.99:
@@ -350,7 +419,6 @@ async def resolution_loop():
         for slug, trade in list(state["traded_markets"].items()):
             if trade.get("won") is not None:
                 continue
-            # Skip if strategy-3 already sold
             if trade.get("sold_early"):
                 continue
 
@@ -369,20 +437,20 @@ async def resolution_loop():
             payout = (TRADE_AMOUNT / trade["price"]) if won else 0.0
             net    = payout - TRADE_AMOUNT
 
-            trade.update(outcome=resolution, won=won, payout=payout, net=net)
+            trade.update(outcome=resolution, won=won, payout=payout, net=net, sl_hit=False)
             if won:
                 state["bankroll"] += payout
 
             logger.info(
                 f"[RESOLVED] {slug} | Bought {bought_side.upper()} | "
                 f"Outcome: {resolution} | {'WIN' if won else 'LOSS'} | "
-                f"Net: {'+'if net>=0 else''}{net:.4f}$ | "
+                f"Net: {'+' if net >= 0 else ''}{net:.4f}$ | "
                 f"Bankroll: ${state['bankroll']:.2f}"
             )
             log_trade_event(
                 slug=slug, side=bought_side, price=trade["price"],
                 market_info=trade["market_info"], order=trade["order"],
-                outcome=resolution, won=won, net=net,
+                outcome=resolution, won=won, net=net, sl_hit=False,
             )
 
 
@@ -418,12 +486,13 @@ async def stats_loop():
         resolved = [t for t in trades.values() if t.get("won") is not None]
         wins     = [t for t in resolved if t["won"]]
         early    = [t for t in trades.values() if t.get("sold_early")]
+        sl_hits  = [t for t in trades.values() if t.get("sl_hit")]
         logger.info(
             f"[STATS] S{state['strategy']} | "
             f"Bankroll:${state['bankroll']:.2f} | "
             f"Trades:{len(trades)} | Resolved:{len(resolved)} | "
             f"Wins:{len(wins)} | Losses:{len(resolved)-len(wins)} | "
-            f"Early exits:{len(early)} | "
+            f"Early exits:{len(early)} | SL hits:{len(sl_hits)} | "
             f"P&L:{state['bankroll']-STARTING_BANKROLL:+.4f}$"
         )
 
@@ -478,7 +547,6 @@ async def main():
     logger.info(f"  Logs     : {TRADES_LOG}  {SUMMARY_FILE}")
     logger.info("=" * 65)
 
-    # ── Discover market ───────────────────────────────────────────────────────
     logger.info(f"Fetching current {COIN} {MARKET_WINDOW_SEC//60}-min market…")
     market_info = discover_market()
 
@@ -506,10 +574,11 @@ async def main():
     logger.info(f"Question: {market_info['question']}")
     logger.info(f"Ends at : {market_info['end_date']}")
     logger.info(f"Window  : {elapsed:.0f}s elapsed / {remaining:.0f}s remaining")
-    logger.info(f"Prices  : UP=${market_info['prices'].get('up',0):.4f}  "
-                f"DOWN=${market_info['prices'].get('down',0):.4f}")
+    logger.info(
+        f"Prices  : UP=${market_info['prices'].get('up', 0):.4f}  "
+        f"DOWN=${market_info['prices'].get('down', 0):.4f}"
+    )
 
-    # ── WebSocket ─────────────────────────────────────────────────────────────
     ws = MarketWebSocket()
     state["ws"] = ws
     ws.on_book(on_book_update)
