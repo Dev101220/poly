@@ -12,8 +12,7 @@ Strategy descriptions:
       After the 2-minute mark, all signals are ignored for that window.
   3 - Wait 1 minute into window, buy the lower-priced side.
       Monitor position live; take profit on gain threshold.
-      Stop-loss is checked only once when time remaining drops from 120s to 119s,
-      and only exits if unrealized loss is greater than $1.
+      Stop-loss exits whenever the open trade reaches -60% PnL.
       One trade per market window.
 """
 
@@ -81,8 +80,7 @@ state = {
     "strat_cfg"      : None,
     # Strategy-3 position tracker
     # slug -> {
-    #   entry_price, token_id, side, sold, sell_price,
-    #   sl_check_done
+    #   entry_price, token_id, side, sold, sell_price
     # }
     "open_positions" : {},
 }
@@ -213,7 +211,7 @@ def strat2_check(side, best_ask, token_id, market_info):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  STRATEGY 3  —  Late Entry + Quick Exit + Timed SL
+#  STRATEGY 3  —  Late Entry + Quick Exit + -60% SL
 # ─────────────────────────────────────────────────────────────────────────────
 
 def strat3_check(side, best_ask, token_id, market_info):
@@ -223,8 +221,7 @@ def strat3_check(side, best_ask, token_id, market_info):
 
     Exit:
       - TP: if position price rises >= take_profit_pct from entry -> sell.
-      - SL: check only once when remaining time drops to 119s (i.e. after 120s remains).
-            Sell only if unrealized loss is > $1.
+      - SL: if open position reaches -60% or worse from entry -> sell immediately.
     """
     cfg        = state["strat_cfg"]
     slug       = market_info["slug"]
@@ -277,51 +274,44 @@ def strat3_check(side, best_ask, token_id, market_info):
                 )
                 return
 
-            # 2) Stop-loss is checked only once when remaining time becomes 119s or less.
-            if not pos.get("sl_check_done") and remaining <= 119:
-                pos["sl_check_done"] = True
+            # 2) Stop-loss: exit immediately if trade reaches -60% or worse.
+            if gain <= -0.60:
+                pos["sold"] = True
+                pos["sell_price"] = best_ask
 
-                if unrealized_loss > 1.0:
-                    pos["sold"] = True
-                    pos["sell_price"] = best_ask
+                state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
 
-                    state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
+                trade = state["traded_markets"].get(slug)
+                if trade:
+                    trade["sold_early"] = True
+                    trade["sell_price"] = best_ask
+                    trade["net"] = unrealized_pnl
+                    trade["won"] = False
+                    trade["outcome"] = f"SL @ ${best_ask:.4f} ({gain*100:.1f}%)"
+                    trade["sl_hit"] = True
 
-                    trade = state["traded_markets"].get(slug)
-                    if trade:
-                        trade["sold_early"] = True
-                        trade["sell_price"] = best_ask
-                        trade["net"] = unrealized_pnl
-                        trade["won"] = False
-                        trade["outcome"] = f"SL @ ${best_ask:.4f} (-${unrealized_loss:.4f})"
-                        trade["sl_hit"] = True
-
-                    logger.info(
-                        f"[SELL/SL] {slug} | {pos['side'].upper()} | "
-                        f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
-                        f"Remaining {remaining:.0f}s | Loss -${unrealized_loss:.4f} | "
-                        f"Bankroll ${state['bankroll']:.2f}"
-                    )
-                    log_trade_event(
-                        slug=slug,
-                        side=pos["side"],
-                        price=best_ask,
-                        market_info=market_info,
-                        order=trade["order"] if trade else None,
-                        outcome=f"SL -${unrealized_loss:.4f}",
-                        won=False,
-                        net=unrealized_pnl,
-                        note=(
-                            f"SL exit @ {remaining:.0f}s remaining | "
-                            f"entry ${entry:.4f} | loss ${unrealized_loss:.4f}"
-                        ),
-                        sl_hit=True,
-                    )
-                else:
-                    logger.info(
-                        f"[SL-CHECK-SKIP] {slug} | {pos['side'].upper()} | "
-                        f"Remaining {remaining:.0f}s | Loss ${unrealized_loss:.4f} <= $1.00"
-                    )
+                logger.info(
+                    f"[SELL/SL] {slug} | {pos['side'].upper()} | "
+                    f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
+                    f"Move {gain*100:.1f}% | PnL ${unrealized_pnl:+.4f} | "
+                    f"Bankroll ${state['bankroll']:.2f}"
+                )
+                log_trade_event(
+                    slug=slug,
+                    side=pos["side"],
+                    price=best_ask,
+                    market_info=market_info,
+                    order=trade["order"] if trade else None,
+                    outcome=f"SL {gain*100:.1f}%",
+                    won=False,
+                    net=unrealized_pnl,
+                    note=(
+                        f"SL exit on -60% threshold | "
+                        f"entry ${entry:.4f} | move {gain*100:.1f}%"
+                    ),
+                    sl_hit=True,
+                )
+                return
         return
 
     # ── Look for new ENTRY ────────────────────────────────────────────────────
@@ -343,7 +333,7 @@ def strat3_check(side, best_ask, token_id, market_info):
         return
 
     fire_order(side, best_ask, token_id, market_info,
-               note=f"Late Entry @ {elapsed:.0f}s | TP +{tp_pct*100:.0f}% | timed SL check @ 119s")
+               note=f"Late Entry @ {elapsed:.0f}s | TP +{tp_pct*100:.0f}% | SL @ -60%")
 
     state["open_positions"][slug] = {
         "side"          : side,
@@ -351,7 +341,6 @@ def strat3_check(side, best_ask, token_id, market_info):
         "entry_price"   : best_ask,
         "sold"          : False,
         "sell_price"    : None,
-        "sl_check_done" : False,
     }
 
 
