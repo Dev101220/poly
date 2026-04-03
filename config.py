@@ -5,7 +5,7 @@ CLOB_WS    = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 # ── Market Config ──────────────────────────────────────────────────────────
 COIN               = "BTC"
-MARKET_WINDOW_SEC  = 300      # 5 minutes (use 900 for 15-min)
+MARKET_WINDOW_SEC  = 900      # 5 minutes (use 900 for 15-min)
 MARKET_CHECK_SEC   = 30       # how often to poll Gamma for market rollover
 
 # ── Common Trading Parameters ──────────────────────────────────────────────
