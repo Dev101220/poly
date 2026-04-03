@@ -10,7 +10,7 @@ MARKET_CHECK_SEC   = 30       # how often to poll Gamma for market rollover
 
 # ── Common Trading Parameters ──────────────────────────────────────────────
 STARTING_BANKROLL = 1000.00   # USD (paper money)
-TRADE_AMOUNT      = 3.00      # USD per trade
+TRADE_AMOUNT      = 30.0      # USD per trade
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STRATEGY CONFIGS
@@ -58,7 +58,7 @@ STRATEGIES = {
         # --- trigger ---
         "trigger_price"      : 0.50,   # buy whichever side is lower (< 0.50 = below fair)
         # --- time gate: enter only between 60 s and 240 s (minute 1 → minute 4) ---
-        "buy_window_start"   : 40,     # 1 minute elapsed
+        "buy_window_start"   : 60,     # 1 minute elapsed
         "buy_window_end"     : 240,    # 4 minutes remaining = 60 s elapsed in 5-min window
         # --- sell: exit when position gains 10-20% ---
         "take_profit_pct"    : 0.05,   # take profit at +10% of entry price
