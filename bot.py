@@ -275,7 +275,7 @@ def strat3_check(side, best_ask, token_id, market_info):
                 return
 
             # 2) Stop-loss: exit immediately if trade reaches -60% or worse.
-            if gain <= -0.75:
+            if gain <= -0.50:
                 pos["sold"] = True
                 pos["sell_price"] = best_ask
 
