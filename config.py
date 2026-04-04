@@ -27,7 +27,7 @@ STRATEGIES = {
         "buy_window_end"   : None,
         "take_profit_pct"  : None,   # hold to resolution
         "sell_after_sec"   : None,
-        "stop_loss_pct"    : -0.70,  # exit at -70%
+        "stop_loss_pct"    : -0.65,  # exit at -70%
     },
 
     2: {
