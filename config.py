@@ -19,17 +19,15 @@ TRADE_AMOUNT      = 3.0      # USD per trade
 
 STRATEGIES = {
 
-    1: {
-        "name"        : "Penny Hunter",
-        "description" : "Buy $1 on any side <= $0.05 anytime during the market window.",
-        # --- trigger ---
-        "trigger_price"      : 0.05,   # buy when best_ask <= this
-        # --- time gate (None = no gate) ---
-        "buy_window_start"   : None,   # seconds from market open  (None = no restriction)
-        "buy_window_end"     : None,   # seconds from market open  (None = no restriction)
-        # --- sell / take-profit (Strategy 3 only) ---
-        "take_profit_pct"    : None,   # None = hold to resolution
-        "sell_after_sec"     : None,
+   1: {
+        "name"             : "Penny Hunter",
+        "description"      : "Buy $1 on any side at exactly $0.95. SL at -70%.",
+        "trigger_price"    : 0.95,   # exact entry price
+        "buy_window_start" : None,
+        "buy_window_end"   : None,
+        "take_profit_pct"  : None,   # hold to resolution
+        "sell_after_sec"   : None,
+        "stop_loss_pct"    : -0.70,  # exit at -70%
     },
 
     2: {
