@@ -408,12 +408,118 @@ def strat3_check(side, best_ask, token_id, market_info):
         "sell_price"    : None,
     }
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  STRATEGY 4  —  Dusk Sniper
+# ─────────────────────────────────────────────────────────────────────────────
 
+def strat4_check(side, best_ask, token_id, market_info):
+    """
+    Entry : buy at EXACTLY $0.93 (any time, one trade per window).
+    Hold  : to resolution by default.
+
+    SL-A (Late window) :
+        If fewer than 20 s remain AND token ask < $0.60 → exit immediately.
+        Rationale: late collapse means the market has likely resolved against us.
+
+    SL-B (Hard floor) :
+        If token ask < $0.50 at ANY point → exit immediately, no time condition.
+        Rationale: sudden large move against position, cut losses fast.
+    """
+    cfg       = state["strat_cfg"]
+    slug      = market_info["slug"]
+    remaining = seconds_remaining(market_info.get("end_date", ""))
+
+    # ── Monitor open position ─────────────────────────────────────────────────
+    pos = state["open_positions"].get(slug)
+    if pos and not pos["sold"] and pos["token_id"] == token_id:
+        entry  = pos["entry_price"]
+        if entry > 0:
+            shares         = TRADE_AMOUNT / entry
+            gain           = (best_ask - entry) / entry
+            unrealized_pnl = (best_ask - entry) * shares
+
+            sl_reason = None
+
+            # SL-B: hard floor — always active
+            if best_ask < cfg["sl_hard_price"]:
+                sl_reason = (
+                    f"SL-B hard floor (ask ${best_ask:.4f} < "
+                    f"${cfg['sl_hard_price']:.2f})"
+                )
+
+            # SL-A: late-window collapse — only in last N seconds
+            elif (
+                remaining <= cfg["sl_late_window_sec"]
+                and best_ask < cfg["sl_late_price"]
+            ):
+                sl_reason = (
+                    f"SL-A late collapse (ask ${best_ask:.4f} < "
+                    f"${cfg['sl_late_price']:.2f} "
+                    f"with {remaining:.1f}s left)"
+                )
+
+            if sl_reason:
+                pos["sold"]       = True
+                pos["sell_price"] = best_ask
+                state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
+
+                trade = state["traded_markets"].get(slug)
+                if trade:
+                    trade["sold_early"] = True
+                    trade["sell_price"] = best_ask
+                    trade["net"]        = unrealized_pnl
+                    trade["won"]        = False
+                    trade["outcome"]    = f"SL @ ${best_ask:.4f} ({gain*100:.1f}%)"
+                    trade["sl_hit"]     = True
+
+                logger.info(
+                    f"[SELL/SL] {slug} | {pos['side'].upper()} | "
+                    f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
+                    f"Move {gain*100:.1f}% | PnL ${unrealized_pnl:+.4f} | "
+                    f"Reason: {sl_reason} | "
+                    f"Bankroll ${state['bankroll']:.2f}"
+                )
+                log_trade_event(
+                    slug=slug,
+                    side=pos["side"],
+                    price=best_ask,
+                    market_info=market_info,
+                    order=trade["order"] if trade else None,
+                    outcome=f"SL {gain*100:.1f}%",
+                    won=False,
+                    net=unrealized_pnl,
+                    note=sl_reason,
+                    sl_hit=True,
+                )
+        return
+
+    # ── Look for new ENTRY ────────────────────────────────────────────────────
+    existing = state["traded_markets"].get(slug)
+    if existing:
+        if existing["side"] != side.upper():
+            log_skip(slug, side, best_ask, market_info,
+                     f"Already bought {existing['side']} — one trade per market")
+        return
+
+    # Exact entry price only
+    if round(best_ask, 2) != cfg["trigger_price"]:
+        return
+
+    fire_order(side, best_ask, token_id, market_info,
+               note=f"Dusk Sniper entry @ exactly ${cfg['trigger_price']:.2f}")
+
+    state["open_positions"][slug] = {
+        "side"        : side,
+        "token_id"    : token_id,
+        "entry_price" : best_ask,
+        "sold"        : False,
+        "sell_price"  : None,
+    }
 # ─────────────────────────────────────────────────────────────────────────────
 #  Strategy dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-STRATEGY_FN = {1: strat1_check, 2: strat2_check, 3: strat3_check}
+STRATEGY_FN = {1: strat1_check, 2: strat2_check, 3: strat3_check, 4: strat4_check}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -577,7 +683,7 @@ async def main():
         ),
     )
     parser.add_argument(
-        "--strat", type=int, choices=[1, 2, 3], default=1,
+        "--strat", type=int, choices=[1, 2, 3,4], default=1,
         metavar="N",
         help="Strategy number (1, 2, or 3). See --help for details.",
     )
