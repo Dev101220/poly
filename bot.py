@@ -161,14 +161,69 @@ def log_skip(slug, side, price, market_info, reason):
 #  STRATEGY 1  —  Penny Hunter
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  STRATEGY 1  —  Penny Hunter
+# ─────────────────────────────────────────────────────────────────────────────
+
 def strat1_check(side, best_ask, token_id, market_info):
-    """Buy $1 on any side <= $0.05 at any time. One trade per market."""
+    """
+    Buy $1 on any side at EXACTLY $0.95.
+    Monitor position live; stop-loss exits if trade reaches -70% PnL.
+    One trade per market window.
+    """
     cfg  = state["strat_cfg"]
     slug = market_info["slug"]
 
-    if best_ask > cfg["trigger_price"]:
+    # ── Monitor open position for SL ─────────────────────────────────────────
+    pos = state["open_positions"].get(slug)
+    if pos and not pos["sold"] and pos["token_id"] == token_id:
+        entry  = pos["entry_price"]
+        if entry > 0:
+            shares          = TRADE_AMOUNT / entry
+            gain            = (best_ask - entry) / entry
+            unrealized_pnl  = (best_ask - entry) * shares
+
+            # Stop-loss: exit immediately if trade reaches -70% or worse
+            if gain <= -0.70:
+                pos["sold"]       = True
+                pos["sell_price"] = best_ask
+
+                state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
+
+                trade = state["traded_markets"].get(slug)
+                if trade:
+                    trade["sold_early"] = True
+                    trade["sell_price"] = best_ask
+                    trade["net"]        = unrealized_pnl
+                    trade["won"]        = False
+                    trade["outcome"]    = f"SL @ ${best_ask:.4f} ({gain*100:.1f}%)"
+                    trade["sl_hit"]     = True
+
+                logger.info(
+                    f"[SELL/SL] {slug} | {pos['side'].upper()} | "
+                    f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
+                    f"Move {gain*100:.1f}% | PnL ${unrealized_pnl:+.4f} | "
+                    f"Bankroll ${state['bankroll']:.2f}"
+                )
+                log_trade_event(
+                    slug=slug,
+                    side=pos["side"],
+                    price=best_ask,
+                    market_info=market_info,
+                    order=trade["order"] if trade else None,
+                    outcome=f"SL {gain*100:.1f}%",
+                    won=False,
+                    net=unrealized_pnl,
+                    note=(
+                        f"SL exit on -70% threshold | "
+                        f"entry ${entry:.4f} | move {gain*100:.1f}%"
+                    ),
+                    sl_hit=True,
+                )
         return
 
+    # ── Look for new ENTRY ────────────────────────────────────────────────────
+    # Skip if already traded this market
     existing = state["traded_markets"].get(slug)
     if existing:
         if existing["side"] != side.upper():
@@ -176,10 +231,20 @@ def strat1_check(side, best_ask, token_id, market_info):
                      f"Already bought {existing['side']} — one trade per market")
         return
 
+    # Enter ONLY at exactly $0.95 (rounded to 2dp to handle float precision)
+    if round(best_ask, 2) != cfg["trigger_price"]:
+        return
+
     fire_order(side, best_ask, token_id, market_info,
-               note="Penny Hunter trigger")
+               note="Penny Hunter trigger @ exactly $0.95")
 
-
+    state["open_positions"][slug] = {
+        "side"        : side,
+        "token_id"    : token_id,
+        "entry_price" : best_ask,
+        "sold"        : False,
+        "sell_price"  : None,
+    }
 # ─────────────────────────────────────────────────────────────────────────────
 #  STRATEGY 2  —  Early Bird
 # ─────────────────────────────────────────────────────────────────────────────
