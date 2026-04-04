@@ -62,6 +62,27 @@ STRATEGIES = {
         "take_profit_pct"    : 0.08,   # take profit at +10% of entry price
         "sell_after_sec"     : None,   # no forced time-exit (hold to resolution if TP not hit)
     },
+   4: {
+    "name"        : "Dusk Sniper",
+    "description" : (
+        "Buy at exactly $0.93. Hold to resolution. "
+        "SL-A: if token ask drops below $0.60 in the last 20s, exit. "
+        "SL-B: if token ask drops below $0.50 at ANY time, exit immediately."
+    ),
+    # --- entry ---
+    "trigger_price"       : 0.93,   # exact ask price required for entry
+
+    # --- stop-loss thresholds ---
+    "sl_late_price"       : 0.60,   # SL-A: only active in last 20 s
+    "sl_late_window_sec"  : 20,     # seconds before expiry to arm SL-A
+    "sl_hard_price"       : 0.50,   # SL-B: always active, immediate exit
+
+    # --- unused by this strat ---
+    "buy_window_start"    : None,
+    "buy_window_end"      : None,
+    "take_profit_pct"     : None,
+    "sell_after_sec"      : None,
+},
 
 }
 
