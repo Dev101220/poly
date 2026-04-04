@@ -184,7 +184,7 @@ def strat1_check(side, best_ask, token_id, market_info):
             unrealized_pnl  = (best_ask - entry) * shares
 
             # Stop-loss: exit immediately if trade reaches -70% or worse
-            if gain <= -0.65:
+            if gain <= -0.40:
                 pos["sold"]       = True
                 pos["sell_price"] = best_ask
 
