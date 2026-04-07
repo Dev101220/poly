@@ -70,7 +70,7 @@ STRATEGIES = {
         "SL-B: if token ask drops below $0.50 at ANY time, exit immediately."
     ),
     # --- entry ---
-    "trigger_price"       : 0.93,   # exact ask price required for entry
+    "trigger_price"       : 0.90,   # exact ask price required for entry
 
     # --- stop-loss thresholds ---
     "sl_late_price"       : 0.60,   # SL-A: only active in last 20 s
