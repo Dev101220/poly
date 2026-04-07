@@ -1,10 +1,12 @@
 """
-Polymarket BTC 5-Min Paper Trading Bot  —  Multi-Strategy Edition
-=================================================================
+Polymarket BTC/ETH 5-Min Paper Trading Bot  —  Multi-Strategy Edition
+======================================================================
 Usage:
     python bot.py --strat 1       # Penny Hunter  (any time, <= $0.05)
     python bot.py --strat 2       # Early Bird    (first 2 min only, < $0.10)
     python bot.py --strat 3       # Late Entry    (min 1-4, TP + timed SL check)
+    python bot.py --strat 4       # Dusk Sniper   (exact $0.93, dual SL)
+    python bot.py --strat 5       # Last Minute Lurker (ETH, last 70s, $0.75-$0.90, SL -17%)
 
 Strategy descriptions:
   1 - Buy $1 on any side <= $0.05, anytime, hold to resolution.
@@ -14,6 +16,10 @@ Strategy descriptions:
       Monitor position live; take profit on gain threshold.
       Stop-loss exits whenever the open trade reaches -60% PnL.
       One trade per market window.
+  4 - Buy at exactly $0.93. Hold to resolution.
+      SL-A: ask < $0.60 in last 20s. SL-B: ask < $0.50 anytime.
+  5 - ETH 5-min market. Enter ONLY in last 70s if ask is $0.75-$0.90.
+      Hold to resolution. SL: exit immediately if position drops -17%.
 """
 
 import argparse
@@ -78,7 +84,7 @@ state = {
     "running"        : True,
     "strategy"       : None,
     "strat_cfg"      : None,
-    # Strategy-3 position tracker
+    # Position tracker used by strategies 1, 3, 4, 5
     # slug -> {
     #   entry_price, token_id, side, sold, sell_price
     # }
@@ -90,13 +96,14 @@ gamma  = GammaClient(host=GAMMA_HOST)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Market discovery
+#  Market discovery  (coin-aware for strategy 5)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def discover_market():
-    info = gamma.get_full_market_info(COIN, window_sec=MARKET_WINDOW_SEC)
+def discover_market(coin_override: str = None):
+    coin = coin_override or COIN
+    info = gamma.get_full_market_info(coin, window_sec=MARKET_WINDOW_SEC)
     if not info:
-        logger.warning(f"No active {COIN} {MARKET_WINDOW_SEC//60}-min market found")
+        logger.warning(f"No active {coin} {MARKET_WINDOW_SEC//60}-min market found")
         return None
     if not info.get("accepting_orders"):
         logger.warning(f"Market {info['slug']} not accepting orders")
@@ -146,7 +153,6 @@ def fire_order(side, price, token_id, market_info, note=""):
     return record
 
 
-
 def log_skip(slug, side, price, market_info, reason):
     logger.info(f"[SKIP] {slug} | {side.upper()} @ ${price:.4f} | {reason}")
     log_trade_event(
@@ -156,10 +162,6 @@ def log_skip(slug, side, price, market_info, reason):
         sl_hit=False,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  STRATEGY 1  —  Penny Hunter
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  STRATEGY 1  —  Penny Hunter
@@ -223,7 +225,6 @@ def strat1_check(side, best_ask, token_id, market_info):
         return
 
     # ── Look for new ENTRY ────────────────────────────────────────────────────
-    # Skip if already traded this market
     existing = state["traded_markets"].get(slug)
     if existing:
         if existing["side"] != side.upper():
@@ -245,6 +246,8 @@ def strat1_check(side, best_ask, token_id, market_info):
         "sold"        : False,
         "sell_price"  : None,
     }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  STRATEGY 2  —  Early Bird
 # ─────────────────────────────────────────────────────────────────────────────
@@ -301,7 +304,6 @@ def strat3_check(side, best_ask, token_id, market_info):
             shares = TRADE_AMOUNT / entry
             gain = (best_ask - entry) / entry
             unrealized_pnl = (best_ask - entry) * shares
-            unrealized_loss = max(0.0, -unrealized_pnl)
 
             # 1) Take profit can happen anytime before expiry.
             if gain >= tp_pct:
@@ -407,6 +409,7 @@ def strat3_check(side, best_ask, token_id, market_info):
         "sold"          : False,
         "sell_price"    : None,
     }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  STRATEGY 4  —  Dusk Sniper
@@ -515,11 +518,140 @@ def strat4_check(side, best_ask, token_id, market_info):
         "sold"        : False,
         "sell_price"  : None,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  STRATEGY 5  —  Last Minute Lurker  (ETH)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def strat5_check(side, best_ask, token_id, market_info):
+    """
+    ETH 5-min market only.
+
+    Entry:
+      - ONLY when <= 70 s remain in the window.
+      - Ask must be within [$0.75, $0.90] inclusive.
+      - One trade per market window (first qualifying side wins).
+
+    Hold:
+      - To resolution by default (no take-profit target).
+
+    Stop-loss:
+      - If the position drops -17% or worse from entry at ANY point
+        after entry, exit immediately and log the loss.
+        Example: entry @ $0.80 → SL triggers when ask <= $0.664.
+
+    Logs:
+      - Same BUY / SELL/SL / RESOLVED log rows as all other strategies.
+    """
+    cfg       = state["strat_cfg"]
+    slug      = market_info["slug"]
+    remaining = seconds_remaining(market_info.get("end_date", ""))
+    sl_pct    = cfg["stop_loss_pct"]          # -0.17
+
+    # ── Monitor open position for SL ─────────────────────────────────────────
+    pos = state["open_positions"].get(slug)
+    if pos and not pos["sold"] and pos["token_id"] == token_id:
+        entry = pos["entry_price"]
+        if entry > 0:
+            shares         = TRADE_AMOUNT / entry
+            gain           = (best_ask - entry) / entry
+            unrealized_pnl = (best_ask - entry) * shares
+
+            # Stop-loss: -17% or worse → exit immediately
+            if gain <= sl_pct:
+                pos["sold"]       = True
+                pos["sell_price"] = best_ask
+                state["bankroll"] += TRADE_AMOUNT + unrealized_pnl
+
+                trade = state["traded_markets"].get(slug)
+                if trade:
+                    trade["sold_early"] = True
+                    trade["sell_price"] = best_ask
+                    trade["net"]        = unrealized_pnl
+                    trade["won"]        = False
+                    trade["outcome"]    = (
+                        f"SL @ ${best_ask:.4f} ({gain*100:.1f}%)"
+                    )
+                    trade["sl_hit"]     = True
+
+                logger.info(
+                    f"[SELL/SL] {slug} | {pos['side'].upper()} | "
+                    f"Entry ${entry:.4f} -> Sell ${best_ask:.4f} | "
+                    f"Move {gain*100:.1f}% | PnL ${unrealized_pnl:+.4f} | "
+                    f"{remaining:.1f}s remaining | "
+                    f"Bankroll ${state['bankroll']:.2f}"
+                )
+                log_trade_event(
+                    slug=slug,
+                    side=pos["side"],
+                    price=best_ask,
+                    market_info=market_info,
+                    order=trade["order"] if trade else None,
+                    outcome=f"SL {gain*100:.1f}%",
+                    won=False,
+                    net=unrealized_pnl,
+                    note=(
+                        f"Last Minute Lurker SL -17% | "
+                        f"entry ${entry:.4f} | sell ${best_ask:.4f} | "
+                        f"move {gain*100:.1f}% | {remaining:.1f}s left"
+                    ),
+                    sl_hit=True,
+                )
+        return
+
+    # ── Look for new ENTRY ────────────────────────────────────────────────────
+    existing = state["traded_markets"].get(slug)
+    if existing:
+        if existing["side"] != side.upper():
+            log_skip(slug, side, best_ask, market_info,
+                     f"Already bought {existing['side']} — one trade per market")
+        return
+
+    # Time gate: only arm entry in last 70 seconds
+    if remaining > cfg["entry_window_sec"]:
+        return   # too early — wait silently
+
+    # Price band check: ask must be in [$0.75, $0.90]
+    price_low  = cfg["trigger_price_low"]
+    price_high = cfg["trigger_price_high"]
+    if not (price_low <= round(best_ask, 4) <= price_high):
+        log_skip(
+            slug, side, best_ask, market_info,
+            f"Last Minute Lurker: ask ${best_ask:.4f} outside band "
+            f"[${price_low:.2f}-${price_high:.2f}] | {remaining:.1f}s left"
+        )
+        return
+
+    fire_order(
+        side, best_ask, token_id, market_info,
+        note=(
+            f"Last Minute Lurker entry | ask ${best_ask:.4f} in "
+            f"[${price_low:.2f}-${price_high:.2f}] | "
+            f"{remaining:.1f}s remaining | SL @ {sl_pct*100:.0f}%"
+        )
+    )
+
+    state["open_positions"][slug] = {
+        "side"        : side,
+        "token_id"    : token_id,
+        "entry_price" : best_ask,
+        "sold"        : False,
+        "sell_price"  : None,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Strategy dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-STRATEGY_FN = {1: strat1_check, 2: strat2_check, 3: strat3_check, 4: strat4_check}
+STRATEGY_FN = {
+    1: strat1_check,
+    2: strat2_check,
+    3: strat3_check,
+    4: strat4_check,
+    5: strat5_check,
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -615,13 +747,17 @@ async def resolution_loop():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Market rollover
+#  Market rollover  (coin-aware for strategy 5)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def market_check_loop(ws: MarketWebSocket):
+    # Determine which coin to track (strategy 5 uses ETH)
+    strat_cfg   = state.get("strat_cfg", {})
+    active_coin = strat_cfg.get("coin", COIN)   # default to global COIN
+
     while state["running"]:
         await asyncio.sleep(MARKET_CHECK_SEC)
-        new_info = await asyncio.to_thread(discover_market)
+        new_info = await asyncio.to_thread(discover_market, active_coin)
         if not new_info:
             continue
         old_info = state.get("current_market")
@@ -675,7 +811,7 @@ def shutdown(signum, frame):
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Polymarket BTC 5-Min Paper Trading Bot",
+        description="Polymarket BTC/ETH 5-Min Paper Trading Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join(
             f"  --strat {n}  {cfg['name']}: {cfg['description']}"
@@ -683,9 +819,9 @@ async def main():
         ),
     )
     parser.add_argument(
-        "--strat", type=int, choices=[1, 2, 3,4], default=1,
+        "--strat", type=int, choices=[1, 2, 3, 4, 5], default=1,
         metavar="N",
-        help="Strategy number (1, 2, or 3). See --help for details.",
+        help="Strategy number (1-5). See --help for details.",
     )
     args = parser.parse_args()
 
@@ -699,22 +835,25 @@ async def main():
     signal.signal(signal.SIGINT,  shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
+    # Strategy 5 targets ETH; all others use the global COIN (BTC)
+    active_coin = strat_cfg.get("coin", COIN)
+
     logger.info("=" * 65)
-    logger.info(f"  Polymarket {COIN} {MARKET_WINDOW_SEC//60}-Min Paper Bot")
+    logger.info(f"  Polymarket {active_coin} {MARKET_WINDOW_SEC//60}-Min Paper Bot")
     logger.info(f"  Strategy {strat_num}: {strat_cfg['name']}")
     logger.info(f"  {strat_cfg['description']}")
     logger.info(f"  Bankroll : ${STARTING_BANKROLL:.2f} (paper money)")
     logger.info(f"  Logs     : {TRADES_LOG}  {SUMMARY_FILE}")
     logger.info("=" * 65)
 
-    logger.info(f"Fetching current {COIN} {MARKET_WINDOW_SEC//60}-min market…")
-    market_info = discover_market()
+    logger.info(f"Fetching current {active_coin} {MARKET_WINDOW_SEC//60}-min market…")
+    market_info = discover_market(active_coin)
 
     if not market_info:
         for attempt in range(6):
             logger.warning(f"No market found — retry {attempt+1}/6 in 30s…")
             await asyncio.sleep(30)
-            market_info = discover_market()
+            market_info = discover_market(active_coin)
             if market_info:
                 break
 
@@ -738,6 +877,14 @@ async def main():
         f"Prices  : UP=${market_info['prices'].get('up', 0):.4f}  "
         f"DOWN=${market_info['prices'].get('down', 0):.4f}"
     )
+
+    # Strategy 5: warn if we've already missed the entry window on startup
+    if strat_num == 5 and remaining > strat_cfg["entry_window_sec"]:
+        wait_for = remaining - strat_cfg["entry_window_sec"]
+        logger.info(
+            f"[S5] Entry window arms in ~{wait_for:.0f}s "
+            f"(when <= {strat_cfg['entry_window_sec']}s remain). Monitoring…"
+        )
 
     ws = MarketWebSocket()
     state["ws"] = ws
