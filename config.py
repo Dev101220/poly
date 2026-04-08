@@ -94,13 +94,13 @@ STRATEGIES = {
             "SL: if position drops -17% from entry price at any time after entry, exit immediately."
         ),
         # --- coin override (ETH instead of BTC) ---
-        "coin"               : "ETH",
+        "coin"               : "BTC",
 
         # --- time gate: only enter when <= 70 s remain ---
-        "entry_window_sec"   : 70,       # arm entry when remaining <= this value
+        "entry_window_sec"   :60,       # arm entry when remaining <= this value
 
         # --- price band ---
-        "trigger_price_low"  : 0.80,     # minimum ask to consider entry
+        "trigger_price_low"  : 0.85,     # minimum ask to consider entry
         "trigger_price_high" : 0.90,     # maximum ask to consider entry
 
         # --- stop-loss ---
