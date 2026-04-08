@@ -119,6 +119,23 @@ STRATEGIES = {
 
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  LIVE TRADING — SET THIS TO True TO USE REAL MONEY
+#  ⚠️  WARNING: Setting LIVE_MODE = True will place REAL orders on Polymarket.
+#               Real USDC will be spent. There is NO further confirmation prompt.
+# ══════════════════════════════════════════════════════════════════════════════
+LIVE_MODE = False   # <-- change to True for real-money trading
+
+# ── Wallet Credentials (only needed when LIVE_MODE = True) ────────────────
+# Option A: set directly here (not recommended — use env vars instead)
+POLY_PRIVATE_KEY  = ""   # your EVM private key  (0x...)
+POLY_SAFE_ADDRESS = ""   # your Polymarket proxy/safe wallet address
+
+# Option B (recommended): set these environment variables instead and leave
+#   the strings above empty.  The order_engine will read os.getenv() first.
+#   export POLY_PRIVATE_KEY="0x..."
+#   export POLY_SAFE_ADDRESS="0x..."
+
 # ── Log files ──────────────────────────────────────────────────────────────
 TRADES_LOG   = "trades_log.txt"
 SUMMARY_FILE = "summary.txt"
