@@ -38,6 +38,7 @@ from config import (
     GAMMA_HOST,
     TRADES_LOG, SUMMARY_FILE, DEBUG_LOG,
     STRATEGIES,
+    LIVE_MODE,
 )
 from gamma_client import GammaClient
 from websocket_client import MarketWebSocket, OrderbookSnapshot
@@ -116,11 +117,11 @@ def discover_market(coin_override: str = None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fire_order(side, price, token_id, market_info, note=""):
-    """Paper buy. Updates bankroll + state. Writes log row. Returns record."""
+    """Buy order. In LIVE_MODE submits a real order; otherwise paper-only."""
     slug  = market_info["slug"]
     order = create_order(
         token_id=token_id, side=side, price=price,
-        amount=TRADE_AMOUNT, market_info=market_info, dry_run=True,
+        amount=TRADE_AMOUNT, market_info=market_info, dry_run=not LIVE_MODE,
     )
     state["bankroll"] -= TRADE_AMOUNT
     record = {
@@ -839,10 +840,11 @@ async def main():
     active_coin = strat_cfg.get("coin", COIN)
 
     logger.info("=" * 65)
-    logger.info(f"  Polymarket {active_coin} {MARKET_WINDOW_SEC//60}-Min Paper Bot")
+    logger.info(f"  Polymarket {active_coin} {MARKET_WINDOW_SEC//60}-Min Trading Bot")
+    logger.info(f"  Mode     : {'*** LIVE — REAL MONEY ***' if LIVE_MODE else 'PAPER (dry run)'}")
     logger.info(f"  Strategy {strat_num}: {strat_cfg['name']}")
     logger.info(f"  {strat_cfg['description']}")
-    logger.info(f"  Bankroll : ${STARTING_BANKROLL:.2f} (paper money)")
+    logger.info(f"  Bankroll : ${STARTING_BANKROLL:.2f}{' (paper)' if not LIVE_MODE else ''}")
     logger.info(f"  Logs     : {TRADES_LOG}  {SUMMARY_FILE}")
     logger.info("=" * 65)
 
