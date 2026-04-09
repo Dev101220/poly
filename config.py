@@ -22,12 +22,12 @@ STRATEGIES = {
     1: {
         "name"             : "Penny Hunter",
         "description"      : "Buy $1 on any side at exactly $0.95. SL at -70%.",
-        "trigger_price"    : 0.96,   # exact entry price
-        "buy_window_start" : None,
+        "trigger_price"    : 0.91,   # exact entry price
+        "buy_window_start" : 250,
         "buy_window_end"   : None,
         "take_profit_pct"  : None,   # hold to resolution
         "sell_after_sec"   : None,
-        "stop_loss_pct"    : -0.40,  # exit at -70%
+        "stop_loss_pct"    : -0.25,  # exit at -70%
     },
 
     2: {
