@@ -39,7 +39,7 @@ STRATEGIES = {
         # --- trigger ---
         "trigger_price"      : 0.05,   # wider than strat-1 (below 10 cents)
         # --- time gate ---
-        "buy_window_start"   : 240,     # open from second 0
+        "buy_window_start"   : 210,     # open from second 0
         "buy_window_end"     : 300,    # close at 2-minute mark (120 s into window)
         # --- sell ---
         "take_profit_pct"    : None,
